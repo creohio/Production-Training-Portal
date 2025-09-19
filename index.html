@@ -21,7 +21,7 @@
   h2{margin:0 0 8px 0;font-size:18px}
   h3{margin:0 0 8px 0;font-size:16px}
   label{display:block;font-size:12px;color:var(--muted);margin:10px 0 6px}
-  input,select,textarea{width:100%;padding:8px;border:1px solid #cbd5e1;border-radius:8px;background:#fff;color:var(--ink)}
+  input,select,textarea{width:100%;padding:8px;border:1px solid #cbd5e1;border-radius:8px;background:#fff;color:#000}
   input[type="checkbox"],input[type="radio"]{width:auto}
   .row{display:flex;gap:10px;flex-wrap:wrap;align-items:center}
   .grid{display:grid;gap:12px}
@@ -70,6 +70,7 @@
     </div>
     <div id="loginStatus" class="muted" style="margin-top:6px;"></div>
     <div class="muted">Demo auth using LocalStorage (not secure).</div>
+    <div id="storageWarn" class="muted" style="margin-top:6px;color:#7c2d12;"></div>
   </section>
 
   <!-- EMPLOYEES -->
@@ -107,8 +108,8 @@
         <button class="btn" id="btnCancelEmp" hidden>Cancel</button>
         <button class="btn" id="btnExport">Export JSON</button>
         <label class="btn"><input type="file" id="impJson" accept=".json" style="display:none">Import JSON</label>
-        <!-- NEW: Restore Backup button -->
         <button class="btn warn" id="btnRestoreBackup" type="button">Restore Backup</button>
+        <button class="btn bad" id="btnResetAdmin" type="button" title="Recreate admin/admin if you’re locked out">Reset Admin</button>
       </div>
     </div>
 
@@ -270,13 +271,13 @@
     </div>
   </section>
 
-  <!-- SHIFTS (number of people per shift) -->
+  <!-- SHIFTS -->
   <section class="card" data-page="shifts" hidden>
     <h2>Shifts Overview</h2>
     <div id="shiftTableArea"></div>
   </section>
 
-  <!-- MY PROFILE / EMPLOYEE -->
+  <!-- PROFILE -->
   <section class="card" data-page="profile" hidden>
     <h2>My Profile</h2>
     <div id="pInfo" class="row"></div>
@@ -301,7 +302,7 @@
     </div>
   </section>
 
-  <!-- TAKE QUIZ (FULL PAGE) -->
+  <!-- TAKE QUIZ -->
   <section class="card" data-page="take" hidden>
     <h2 id="takeTitle">Take Quiz</h2>
     <form id="takeForm"></form>
@@ -316,88 +317,41 @@
 </div>
 
 <script>
-/* ======================= Utilities & Store ======================= */
-const LS = "ptp_v3";
-const emptyDb = {
-  employees:[], machines:[], quizzes:[], assignments:[], attempts:[], training:[], audit:[]
-};
-let db = load();
-let session = JSON.parse(localStorage.getItem("ptp_session")||"null"); // {userId}
+/* ======================= Namespaced Storage Keys ======================= */
+const NS = (location.host + location.pathname.replace(/\/$/, ''));
+const LS = `ptp_v3:${NS}`;
+const SKEY = `ptp_session:${NS}`;
+const SEED_FLAG = `ptp_seeded_v3:${NS}`;
 
-/* ===== Seed sample ONCE (guarded) ===== */
-const SEED_FLAG = 'ptp_seeded_v3';
-if (!localStorage.getItem(SEED_FLAG)) {
-  const dbEmpty =
-    (db.employees?.length||0) === 0 &&
-    (db.machines?.length||0)  === 0 &&
-    (db.quizzes?.length||0)   === 0;
-
-  if (dbEmpty) {
-    const e1 = addEmployee({name:"Admin", username:"admin", password:"admin", isAdmin:true, active:true, dept:"HR", shift:"1st", hire:"2024-01-01"}, false);
-    const e2 = addEmployee({name:"Casey Carter", username:"ccarter", password:"test", isAdmin:false, active:true, dept:"Wire", shift:"2nd", hire:"2024-03-15"}, false);
-    const m1 = addMachine({name:"Draw Bench #1", dept:"Wire", active:true}, false);
-    const m2 = addMachine({name:"Pickle House", dept:"Wire", active:true}, false);
-
-    const qid = nextId("quizzes");
-    db.quizzes.push({
-      id: qid, title:"Draw Bench Safety", passPercent:80, active:true,
-      machineIds:[m1.id],
-      questions:[
-        {id:1,type:"single",text:"What PPE is required?", options:[
-          {id:1,text:"Safety glasses and gloves",correct:true},
-          {id:2,text:"None",correct:false}
-        ]},
-        {id:2,type:"single",text:"Where is the E-stop located?", options:[
-          {id:1,text:"On the operator panel",correct:true},
-          {id:2,text:"Behind the machine",correct:false}
-        ]},
-        {id:3,type:"multi",text:"Which are valid lockout points? (pick all that apply)", options:[
-          {id:1,text:"Main power disconnect",correct:true},
-          {id:2,text:"Compressed air supply",correct:true},
-          {id:3,text:"Coolant reservoir",correct:false}
-        ]}
-      ]
-    });
-    save("Seed sample data");
-  }
-  localStorage.setItem(SEED_FLAG, '1');
-}
-
-function load(){ try{const j=localStorage.getItem(LS); return j? JSON.parse(j):structuredClone(emptyDb);}catch{ return structuredClone(emptyDb);} }
-
-/* ===== save(): now writes a rolling backup snapshot too ===== */
-function save(auditNote=null){
-  // write primary
-  localStorage.setItem(LS, JSON.stringify(db));
-  // write backup copy
-  localStorage.setItem(LS + "_backup", JSON.stringify(db));
-
-  if(auditNote && getMe()?.isAdmin){
-    db.audit.unshift(`${new Date().toLocaleString()} — ${getMe().username}: ${auditNote}`);
-    db.audit = db.audit.slice(0,200);
-    localStorage.setItem(LS, JSON.stringify(db));
-    localStorage.setItem(LS + "_backup", JSON.stringify(db));
-  }
-  render();
-}
-
-/* ===== one-click restore from backup ===== */
-function restoreBackup(){
-  const snap = localStorage.getItem(LS + "_backup");
-  if(!snap){ alert("No backup snapshot found."); return; }
-  if(!confirm("Restore last backup snapshot? This will overwrite the current state.")) return;
+/* ======================= Storage Health Check ======================= */
+(function(){
   try{
-    db = JSON.parse(snap);
-    localStorage.setItem(LS, snap);
-    render();
-    alert("Backup restored.");
-  }catch{
-    alert("Backup could not be parsed.");
+    const testKey = '__ptp_test__';
+    localStorage.setItem(testKey, '1');
+    localStorage.removeItem(testKey);
+  }catch(e){
+    const w = document.getElementById('storageWarn');
+    if(w){ w.textContent = 'Warning: Your browser is blocking localStorage (privacy mode or cross-site tracking prevention). Changes will not persist.'; }
   }
-}
+})();
 
+/* ======================= DB & Session ======================= */
+const emptyDb = { employees:[], machines:[], quizzes:[], assignments:[], attempts:[], training:[], audit:[] };
+function load(){
+  try{
+    const j = localStorage.getItem(LS);
+    return j ? JSON.parse(j) : structuredClone(emptyDb);
+  }catch{ return structuredClone(emptyDb); }
+}
+let db = load();
+
+let session=null;
+try{ session = JSON.parse(localStorage.getItem(SKEY)||'null'); }catch{ session=null; }
+
+/* ===== Helpers ===== */
 function nextId(col){ let m=0; db[col].forEach(r=>m=Math.max(m,r.id||0)); return m+1; }
-function getMe(){ return session? db.employees.find(e=>e.id===session.userId):null; }
+function getMe(){ return session ? db.employees.find(e=>e.id===session.userId) : null; }
+function csv(v){ if(v==null) v=""; v=String(v); if(v.includes(",")||v.includes('"')) return `"${v.replaceAll('"','""')}"`; return v; }
 function parseCsv(text){
   const lines = text.replace(/\r/g,"").split("\n").filter(l=>l.trim().length);
   const out=[];
@@ -413,6 +367,87 @@ function parseCsv(text){
   }
   return out;
 }
+
+/* ===== Persistence with rolling backup ===== */
+function save(auditNote=null){
+  localStorage.setItem(LS, JSON.stringify(db));
+  localStorage.setItem(LS + "_backup", JSON.stringify(db));
+  if(auditNote && getMe()?.isAdmin){
+    db.audit.unshift(`${new Date().toLocaleString()} — ${getMe().username}: ${auditNote}`);
+    db.audit = db.audit.slice(0,200);
+    localStorage.setItem(LS, JSON.stringify(db));
+    localStorage.setItem(LS + "_backup", JSON.stringify(db));
+  }
+  render();
+}
+function restoreBackup(){
+  const snap = localStorage.getItem(LS + "_backup");
+  if(!snap){ alert("No backup snapshot found."); return; }
+  if(!confirm("Restore last backup snapshot? This will overwrite the current state.")) return;
+  try{
+    db = JSON.parse(snap);
+    localStorage.setItem(LS, snap);
+    ensureAdmin();
+    render();
+    alert("Backup restored.");
+  }catch{ alert("Backup could not be parsed."); }
+}
+
+/* ===== Seed once + ensure admin always exists ===== */
+function addEmployee({name,username,password,isAdmin,active,dept,shift,hire}, audit=true){
+  const e={id:nextId("employees"),name,username,password,isAdmin:!!isAdmin,active:active!==false,dept:dept||"",shift:shift||"1st",hire:hire||""};
+  db.employees.push(e); if(audit) save(`Add employee ${username}`); return e;
+}
+function addMachine({name,dept,active}, audit=true){
+  const m={id:nextId("machines"), name, dept:dept||"", active:active!==false};
+  db.machines.push(m); if(audit) save(`Add machine ${name}`); return m;
+}
+function ensureAdmin(){
+  const anyAdmin = db.employees.some(e=>e.isAdmin);
+  if(!anyAdmin){
+    addEmployee({name:"Admin", username:"admin", password:"admin", isAdmin:true, active:true, dept:"", shift:"1st", hire:""}, false);
+    localStorage.setItem(LS, JSON.stringify(db));
+  }
+}
+(function seedOnce(){
+  if(!localStorage.getItem(SEED_FLAG)){
+    const dbEmpty =
+      (db.employees?.length||0)===0 &&
+      (db.machines?.length||0)===0 &&
+      (db.quizzes?.length||0)===0;
+
+    if(dbEmpty){
+      const e1 = addEmployee({name:"Admin", username:"admin", password:"admin", isAdmin:true, active:true, dept:"HR", shift:"1st", hire:"2024-01-01"}, false);
+      const e2 = addEmployee({name:"Casey Carter", username:"ccarter", password:"test", isAdmin:false, active:true, dept:"Wire", shift:"2nd", hire:"2024-03-15"}, false);
+      const m1 = addMachine({name:"Draw Bench #1", dept:"Wire", active:true}, false);
+      const m2 = addMachine({name:"Pickle House", dept:"Wire", active:true}, false);
+
+      const qid = nextId("quizzes");
+      db.quizzes.push({
+        id: qid, title:"Draw Bench Safety", passPercent:80, active:true,
+        machineIds:[m1.id],
+        questions:[
+          {id:1,type:"single",text:"What PPE is required?", options:[
+            {id:1,text:"Safety glasses and gloves",correct:true},
+            {id:2,text:"None",correct:false}
+          ]},
+          {id:2,type:"single",text:"Where is the E-stop located?", options:[
+            {id:1,text:"On the operator panel",correct:true},
+            {id:2,text:"Behind the machine",correct:false}
+          ]},
+          {id:3,type:"multi",text:"Which are valid lockout points? (pick all that apply)", options:[
+            {id:1,text:"Main power disconnect",correct:true},
+            {id:2,text:"Compressed air supply",correct:true},
+            {id:3,text:"Coolant reservoir",correct:false}
+          ]}
+        ]
+      });
+      save("Seed sample data");
+    }
+    localStorage.setItem(SEED_FLAG, '1');
+  }
+  ensureAdmin();
+})();
 
 /* ======================= Tabs & Role Gating ======================= */
 const PAGES = [
@@ -448,10 +483,6 @@ function gateTabs(){
 }
 
 /* ======================= Employees ======================= */
-function addEmployee({name,username,password,isAdmin,active,dept,shift,hire}, audit=true){
-  const e={id:nextId("employees"),name,username,password,isAdmin:!!isAdmin,active:active!==false,dept:dept||"",shift:shift||"1st",hire:hire||""};
-  db.employees.push(e); if(audit) save(`Add employee ${username}`); return e;
-}
 function deleteEmployee(id){
   const e=db.employees.find(x=>x.id===id); if(!e) return;
   if(!confirm(`Delete ${e.name}? Their assignments, attempts, and training will be removed.`)) return;
@@ -459,7 +490,8 @@ function deleteEmployee(id){
   db.attempts    = db.attempts.filter(a=>a.employeeId!==id);
   db.training    = db.training.filter(t=>t.employeeId!==id);
   db.employees   = db.employees.filter(x=>x.id!==id);
-  if(session?.userId===id){ session=null; localStorage.removeItem("ptp_session"); }
+  if(session?.userId===id){ session=null; localStorage.removeItem(SKEY); }
+  ensureAdmin();
   save(`Delete employee ${e.username}`);
 }
 
@@ -498,7 +530,7 @@ document.getElementById("btnSaveEmp").onclick = ()=>{
     id: eId.value ? +eId.value : null,
     name: eName.value.trim(),
     username: eUser.value.trim(),
-    password: ePass.value, // blank => keep old on update
+    password: ePass.value,
     dept: eDept.value.trim(),
     shift: eShift.value,
     hire: eHire.value,
@@ -509,9 +541,7 @@ document.getElementById("btnSaveEmp").onclick = ()=>{
     alert("Name, username, and password (for new user) are required."); return;
   }
   if(payload.id){
-    // update
     const emp = db.employees.find(x=>x.id===payload.id); if(!emp) return;
-    // unique username
     if(db.employees.some(x=>x.username===payload.username && x.id!==payload.id)){
       alert("Username already exists."); return;
     }
@@ -523,9 +553,9 @@ document.getElementById("btnSaveEmp").onclick = ()=>{
     emp.hire = payload.hire;
     emp.active = payload.active;
     emp.isAdmin = payload.isAdmin;
+    ensureAdmin(); // if you removed admin from the only admin, ensure one exists
     save(`Update employee ${emp.username}`);
   }else{
-    // add new
     if(db.employees.some(x=>x.username===payload.username)){ alert("Username already exists."); return; }
     addEmployee({name:payload.name, username:payload.username, password:payload.password.trim(), isAdmin:payload.isAdmin, active:payload.active, dept:payload.dept, shift:payload.shift, hire:payload.hire});
   }
@@ -539,10 +569,6 @@ function startReset(id){
 }
 
 /* ======================= Machines ======================= */
-function addMachine({name,dept,active}, audit=true){
-  const m={id:nextId("machines"), name, dept:dept||"", active:active!==false};
-  db.machines.push(m); if(audit) save(`Add machine ${name}`); return m;
-}
 function deleteMachine(id){
   const m=db.machines.find(x=>x.id===id); if(!m) return;
   if(!confirm(`Delete machine "${m.name}"? It will be unlinked from quizzes; historical training kept.`)) return;
@@ -667,7 +693,7 @@ function backfill(empId, quizId, score, dateStr){
 }
 
 /* ======================= Take Quiz ======================= */
-let takeContext=null; // {empId, quizId}
+let takeContext=null;
 function openTake(empId, quizId){
   const e=db.employees.find(x=>x.id===empId), q=db.quizzes.find(x=>x.id===quizId); if(!e||!q) return;
   takeContext={empId,quizId};
@@ -778,7 +804,11 @@ function render(){
   }
 
   // Quiz machine choices and table
-  const qSel=document.getElementById("qMachines"); if(qSel){ qSel.innerHTML=""; db.machines.forEach(m=>{ const o=document.createElement("option"); o.value=m.id; o.textContent=`${m.name} ${m.dept?'— '+m.dept:''}`; qSel.appendChild(o); }); }
+  const qSel=document.getElementById("qMachines");
+  if(qSel){
+    qSel.innerHTML="";
+    db.machines.forEach(m=>{ const o=document.createElement("option"); o.value=m.id; o.textContent=`${m.name} ${m.dept?'— '+m.dept:''}`; qSel.appendChild(o); });
+  }
   const qtb=document.querySelector("#qTable tbody");
   if(qtb){
     qtb.innerHTML="";
@@ -820,7 +850,6 @@ function render(){
     const byShift={"1st":0,"2nd":0,"3rd":0};
     db.employees.filter(e=>e.active).forEach(e=>{ byShift[e.shift]=(byShift[e.shift]||0)+1; });
     sc.innerHTML = `<div>1st Shift: ${byShift["1st"]||0}</div><div>2nd Shift: ${byShift["2nd"]||0}</div><div>3rd Shift: ${byShift["3rd"]||0}</div>`;
-    // Shifts page
     document.getElementById("shiftTableArea").innerHTML = `<table><thead><tr><th>Shift</th><th>Count</th></tr></thead>
       <tbody><tr><td>1st</td><td>${byShift["1st"]||0}</td></tr><tr><td>2nd</td><td>${byShift["2nd"]||0}</td></tr><tr><td>3rd</td><td>${byShift["3rd"]||0}</td></tr></tbody></table>`;
   }
@@ -832,7 +861,6 @@ function render(){
     if(!me){ document.getElementById("pInfo").innerHTML='<span class="muted">Login to see your profile.</span>'; return; }
     const attempts = db.attempts.filter(a=>a.employeeId===me.id);
     const passedQ = new Set(attempts.filter(a=>a.passed).map(a=>a.quizId));
-    // Trained machines (with 12-month expiration flag)
     const trained = [];
     for(const t of db.training.filter(t=>t.employeeId===me.id)){
       const m=db.machines.find(x=>x.id===t.machineId); if(!m) continue;
@@ -849,7 +877,6 @@ function render(){
         pT.appendChild(li);
       });
     }
-    // Completed
     const pC=document.getElementById("pCompleted"); pC.innerHTML="";
     attempts.sort((a,b)=>new Date(b.takenOn)-new Date(a.takenOn)).forEach(a=>{
       const q=db.quizzes.find(x=>x.id===a.quizId);
@@ -857,7 +884,6 @@ function render(){
       li.textContent = `${q? q.title:"(deleted)"} — ${a.scorePercent}% — ${a.passed?"Passed":"Failed"} — ${new Date(a.takenOn).toLocaleDateString()}`;
       pC.appendChild(li);
     });
-    // Assigned & outstanding with due badges
     const assigned = db.assignments.filter(a=>a.employeeId===me.id);
     const outstanding = assigned.filter(a=>!passedQ.has(a.quizId));
     const pA=document.getElementById("pAssigned"); pA.innerHTML="";
@@ -870,9 +896,7 @@ function render(){
         <button class="btn" onclick="openTake(${me.id}, ${a.quizId})" ${hasPassed(me.id,a.quizId)?'disabled':''}>Take</button>`;
       pA.appendChild(li);
     });
-    // Header
     document.getElementById("pInfo").innerHTML = `<div><strong>${me.name}</strong><div class="muted">${me.username} • ${me.dept||"—"} • ${me.shift||"—"} • Hired ${me.hire||"—"}</div></div>`;
-    // Chart: completed vs assigned
     drawProfileChart("pChart", passedQ.size, assigned.length);
   }
 }
@@ -883,10 +907,24 @@ document.getElementById("btnLogin").onclick=()=>{
   const u=(document.getElementById("loginUser").value||"").trim();
   const p=(document.getElementById("loginPass").value||"").trim();
   const user = db.employees.find(e=>e.username===u && e.password===p && e.active!==false);
-  if(user){ session={userId:user.id}; localStorage.setItem("ptp_session", JSON.stringify(session)); render(); const goto = user.isAdmin?"employees":"profile"; Array.from(document.querySelectorAll(".tab")).find(t=>t.dataset.page===goto)?.click(); }
-  else { document.getElementById("loginStatus").textContent="Invalid credentials or inactive user."; }
+  if(user){
+    session={userId:user.id};
+    localStorage.setItem(SKEY, JSON.stringify(session));
+    render();
+    const goto = user.isAdmin?"employees":"profile";
+    Array.from(document.querySelectorAll(".tab")).find(t=>t.dataset.page===goto)?.click();
+  } else {
+    document.getElementById("loginStatus").textContent="Invalid credentials or inactive user.";
+  }
 };
-document.getElementById("btnLogout").onclick=()=>{ session=null; localStorage.removeItem("ptp_session"); render(); Array.from(document.querySelectorAll(".tab"))[0].click(); };
+document.getElementById("btnLogout").onclick=()=>{
+  session=null;
+  localStorage.removeItem(SKEY);
+  document.getElementById("loginUser").value="";
+  document.getElementById("loginPass").value="";
+  render();
+  Array.from(document.querySelectorAll(".tab"))[0].click();
+};
 
 // Export/Import JSON
 document.getElementById("btnExport").onclick=()=>{
@@ -896,11 +934,18 @@ document.getElementById("btnExport").onclick=()=>{
 document.getElementById("impJson").onchange=(e)=>{
   const f=e.target.files[0]; if(!f) return;
   const r=new FileReader();
-  r.onload=()=>{ try{ db=JSON.parse(r.result); save("Import JSON"); }catch{ alert("Invalid JSON"); } };
+  r.onload=()=>{ try{ db=JSON.parse(r.result); ensureAdmin(); save("Import JSON"); }catch{ alert("Invalid JSON"); } };
   r.readAsText(f);
 };
-// NEW: Restore Backup button hook
 document.getElementById("btnRestoreBackup").onclick=restoreBackup;
+document.getElementById("btnResetAdmin").onclick=()=>{
+  if(!confirm('Recreate "admin" user with password "admin"? (If an admin named admin exists, its password will be reset.)')) return;
+  let a = db.employees.find(e=>e.username==="admin");
+  if(a){ a.password="admin"; a.isAdmin=true; a.active=true; }
+  else { addEmployee({name:"Admin", username:"admin", password:"admin", isAdmin:true, active:true, dept:"", shift:"1st", hire:""}, false); }
+  save("Reset admin credentials");
+  alert('Admin reset: username "admin", password "admin".');
+};
 
 // Import Employees CSV
 document.getElementById("btnImpEmp").onclick=()=>{
@@ -920,6 +965,7 @@ document.getElementById("btnImpEmp").onclick=()=>{
       addEmployee({name,username,password:"changeme",dept:row[iD]||"",shift:row[iS]||"1st",active:((row[iA]||"true").toLowerCase()==="true"),isAdmin:((row[iAd]||"false").toLowerCase()==="true"),hire:row[iH]||""}, false);
       ok++;
     }
+    ensureAdmin();
     save(`Import ${ok} employees (CSV)`);
     alert(`Imported ${ok} employees from CSV.`);
   };
@@ -938,7 +984,7 @@ document.getElementById("btnImpM").onclick=()=>{
   const r=new FileReader();
   r.onload=()=>{
     const rows=parseCsv(r.result); const hdr=rows[0].map(h=>h.toLowerCase());
-    const iN=hdr.indexOf("name"), iL=hdr.indexOf("location"), iD=hdr.indexOf("department"), iA=hdr.indexOf("active(true/false)");
+    const iN=hdr.indexOf("name"), iD=hdr.indexOf("department"), iA=hdr.indexOf("active(true/false)");
     let ok=0;
     for(let i=1;i<rows.length;i++){
       const row=rows[i]; const name=row[iN]||""; if(!name) continue;
@@ -1018,7 +1064,6 @@ document.getElementById("btnExportMatrix").onclick=()=>{
   const blob=new Blob([lines.join("\n")],{type:"text/csv"});
   const a=document.createElement("a"); a.href=URL.createObjectURL(blob); a.download="training_matrix.csv"; a.click();
 };
-function csv(v){ if(v==null) v=""; v=String(v); if(v.includes(",")||v.includes('"')) return `"${v.replaceAll('"','""')}"`; return v; }
 
 /* ======================= Profile Chart ======================= */
 function drawProfileChart(id, completed, assigned){
@@ -1027,7 +1072,7 @@ function drawProfileChart(id, completed, assigned){
   const labels=["Completed","Assigned"];
   const vals=[completed, assigned];
   const max=Math.max(1, ...vals);
-  const w=c.width, h=c.height, barW=80, gap=40, base= h-20, scale=(h-40)/max;
+  const h=c.height, barW=80, gap=40, base= h-20, scale=(h-40)/max;
   ctx.font="12px system-ui"; ctx.fillStyle="#0f172a";
   vals.forEach((v,i)=>{
     const x=40 + i*(barW+gap);
@@ -1043,7 +1088,7 @@ function drawProfileChart(id, completed, assigned){
 /* ======================= Helper queries ======================= */
 function hasPassed(empId, quizId){ return db.attempts.some(a=>a.employeeId===empId && a.quizId===quizId && a.passed); }
 
-/* ======================= Tab clicks default ======================= */
+/* ======================= Boot ======================= */
 Array.from(document.querySelectorAll(".tab"))[0].click();
 if(getMe()){ Array.from(document.querySelectorAll(".tab")).find(t=>t.dataset.page==(getMe().isAdmin?"employees":"profile")).click(); }
 
