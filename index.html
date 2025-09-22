@@ -249,6 +249,21 @@
     </div>
   </section>
 
+
+  <!-- CHARTS -->
+  <section class="card" data-page="charts" hidden>
+    <h2>Charts</h2>
+    <div class="row" style="margin-bottom:8px;">
+      <div>
+        <label>Department</label>
+        <select id="chDept"></select>
+      </div>
+      <div class="muted" style="align-self:end;">Counts are # employees trained per shift for each resource (machine).</div>
+    </div>
+    <div id="chArea"></div>
+  </section>
+
+
   <!-- REPORTS -->
   <section class="card" data-page="reports" hidden>
     <h2>Reports</h2>
@@ -309,6 +324,7 @@
     <div class="row" style="margin-top:10px;">
       <button class="btn good" id="btnSubmitTake">Submit</button>
       <button class="btn" id="btnCancelTake" type="button">Cancel</button>
+      <button class="btn primary" id="btnReturnProfile" type="button" hidden>Return to My Profile</button>
     </div>
     <div id="takeResult" class="muted" style="margin-top:8px;"></div>
     <div id="takeReview" class="qbox" hidden></div>
@@ -457,6 +473,7 @@ const PAGES = [
   ["quizzes","Quizzes", true],
   ["assign","Assignments", true],
   ["backfill","Backfill", true],
+  ["charts","Charts", true],
   ["reports","Reports", true],
   ["shifts","Shifts", true],
   ["profile","My Profile"],
@@ -728,8 +745,14 @@ function openTake(empId, quizId){
   document.querySelectorAll("[data-page]").forEach(s=>s.hidden = s.getAttribute("data-page")!=="take");
   document.getElementById("takeResult").textContent="";
   document.getElementById("takeReview").hidden=true;
+  const rb = document.getElementById("btnReturnProfile"); if(rb){ rb.hidden = true; }
 }
 document.getElementById("btnCancelTake").onclick=()=>{ switchToDefault(); };
+
+document.getElementById("btnReturnProfile").onclick=()=>{
+  const tabBtn = Array.from(document.querySelectorAll(".tab")).find(t=>t.dataset.page==="profile");
+  tabBtn ? tabBtn.click() : switchToDefault();
+};
 
 document.getElementById("btnSubmitTake").onclick=(e)=>{
   e.preventDefault();
@@ -738,6 +761,7 @@ document.getElementById("btnSubmitTake").onclick=(e)=>{
   const f=document.getElementById("takeForm");
   let correct=0,total=q.questions.length;
   const reviewLines=[];
+  const perQuestionResults=[];
   for(const qq of q.questions){
     const name=`q_${qq.id}`;
     let chosen=[];
@@ -746,10 +770,13 @@ document.getElementById("btnSubmitTake").onclick=(e)=>{
     const correctIds = qq.options.filter(o=>o.correct).map(o=>String(o.id));
     const ok = arraysEqual(new Set(chosen), new Set(correctIds));
     if(ok) correct++;
+    perQuestionResults.push({questionId: qq.id, ok});
     const chosenText = qq.options.filter(o=>chosen.includes(String(o.id))).map(o=>o.text).join("; ") || "(none)";
     const correctText = qq.options.filter(o=>o.correct).map(o=>o.text).join("; ");
     reviewLines.push(`${ok?"✓":"✗"} ${qq.text}  — Your answer: ${chosenText}  — Correct: ${correctText}`);
   }
+  // Update miss stats by year
+  ensureMissStats(q, perQuestionResults);
   const score = Math.round((correct/total)*100);
   const passed = score>=q.passPercent;
 
@@ -768,6 +795,7 @@ document.getElementById("btnSubmitTake").onclick=(e)=>{
   const msg = `${score}% — ${passed?"Passed":"Failed"}${alreadyPassed?" (locked: already passed before)":" (you can retry)"}`
   document.getElementById("takeResult").textContent=msg;
   const rv=document.getElementById("takeReview"); rv.hidden=false; rv.innerHTML="<strong>Review</strong><br>"+reviewLines.map(l=>`<div>${l}</div>`).join("");
+  const rb = document.getElementById("btnReturnProfile"); if(rb){ rb.hidden = false; }
   if(alreadyPassed || passed){
     document.getElementById("btnSubmitTake").disabled=true;
   }
@@ -873,6 +901,11 @@ function render(){
     document.getElementById("shiftTableArea").innerHTML = `<table><thead><tr><th>Shift</th><th>Count</th></tr></thead>
       <tbody><tr><td>1st</td><td>${byShift["1st"]||0}</td></tr><tr><td>2nd</td><td>${byShift["2nd"]||0}</td></tr><tr><td>3rd</td><td>${byShift["3rd"]||0}</td></tr></tbody></table>`;
   }
+  // Charts tab
+  renderChartsTab();
+  // Most-missed controls
+  renderMostMissedControls();
+
   // Audit log
   const al=document.getElementById("auditList"); if(al){ al.innerHTML = db.audit.map(a=>`<li class="muted">${a}</li>`).join("") || "<li class='muted'>No actions yet</li>"; }
 
@@ -1087,6 +1120,165 @@ document.getElementById("btnExportMatrix").onclick=()=>{
 
 /* ======================= Profile Chart ======================= */
 function drawProfileChart(id, completed, assigned){
+/* ===== Ensure qstats collection exists (stores per-question misses/attempts per year) ===== */
+if(!db.qstats) db.qstats = [];
+
+/* ===== Charts helpers ===== */
+function uniqueDeptsFromMachines(){
+  const set = new Set(db.machines.map(m=>m.dept).filter(Boolean));
+  return Array.from(set).sort();
+}
+function countTrainedByShiftForMachine(mid){
+  const counts = {"1st":0,"2nd":0,"3rd":0};
+  const trained = db.training.filter(t=>t.machineId===mid);
+  trained.forEach(t=>{
+    const emp = db.employees.find(e=>e.id===t.employeeId);
+    if(emp && emp.active!==false){
+      const sh = (emp.shift||"1st");
+      if(counts[sh]!==undefined) counts[sh] += 1;
+    }
+  });
+  return counts;
+}
+function drawShiftBars(canvasId, counts){
+  const c = document.getElementById(canvasId); if(!c) return;
+  const ctx = c.getContext("2d");
+  const labels = ["1st","2nd","3rd"];
+  const vals = labels.map(k=>counts[k]||0);
+  const w = c.width, h = c.height;
+  ctx.clearRect(0,0,w,h);
+  const max = Math.max(1, ...vals);
+  const barW = 60, gap = 40, left = 30, base = h-20, scale = (h-40)/max;
+  ctx.font = "12px system-ui"; ctx.fillStyle = "#0f172a";
+  vals.forEach((v,i)=>{
+    const x = left + i*(barW+gap);
+    const bh = v*scale;
+    ctx.fillStyle = ["#16a34a","#2563eb","#d97706"][i%3];
+    ctx.fillRect(x, base-bh, barW, bh);
+    ctx.fillStyle = "#0f172a";
+    ctx.fillText(labels[i], x, base+14);
+    ctx.fillText(String(v), x+barW/2-6, base-bh-6);
+  });
+}
+function renderChartsTab(){
+  const deptSel = document.getElementById("chDept");
+  const area = document.getElementById("chArea");
+  if(!deptSel || !area) return;
+  if(!deptSel.dataset.filled){
+    const depts = uniqueDeptsFromMachines();
+    deptSel.innerHTML = "";
+    if(depts.length===0){ deptSel.innerHTML = "<option value=''>No departments</option>"; }
+    else { depts.forEach(d=>{ const o=document.createElement("option"); o.value=d; o.textContent=d; deptSel.appendChild(o); }); deptSel.value = depts[0]; }
+    deptSel.dataset.filled = "1";
+    deptSel.onchange = ()=>renderChartsTab();
+  }
+  const dept = deptSel.value || "";
+  const machines = db.machines.filter(m=>m.dept===dept);
+  if(machines.length===0){
+    area.innerHTML = "<div class='muted'>No machines found for this department.</div>";
+    return;
+  }
+  area.innerHTML = "";
+  machines.forEach(m=>{
+    const counts = countTrainedByShiftForMachine(m.id);
+    const canId = "chc_"+m.id;
+    const card = document.createElement("div"); card.className = "card";
+    card.innerHTML = `<div class="row"><h3>${m.name}</h3></div>
+      <div class="row">
+        <canvas id="${canId}" width="360" height="160" aria-label="Shift chart for ${m.name}"></canvas>
+        <div class="muted" style="margin-left:16px;">
+          <div>1st: ${counts["1st"]||0}</div>
+          <div>2nd: ${counts["2nd"]||0}</div>
+          <div>3rd: ${counts["3rd"]||0}</div>
+        </div>
+      </div>`;
+    area.appendChild(card);
+    drawShiftBars(canId, counts);
+  });
+}
+
+/* ===== Most-Missed export ===== */
+function ensureMissStats(quiz, perQuestionResults){
+  const now = new Date();
+  const year = now.getFullYear();
+  perQuestionResults.forEach(r=>{
+    let s = db.qstats.find(x=>x.quizId===quiz.id && x.questionId===r.questionId && x.year===year);
+    if(!s){
+      s = { id: crypto.randomUUID(), quizId: quiz.id, questionId: r.questionId, year, attempts: 0, misses: 0 };
+      db.qstats.push(s);
+    }
+    s.attempts += 1;
+    if(!r.ok) s.misses += 1;
+  });
+}
+function buildMostMissedRowsForYear(year){
+  const rows = [];
+  db.qstats.filter(s=>s.year===year && s.misses>0).forEach(s=>{
+    const qz = db.quizzes.find(q=>q.id===s.quizId);
+    let qtext = "(deleted question)";
+    if(qz){
+      const qq = (qz.questions||[]).find(qq=> String(qq.id)===String(s.questionId) || qq.id===s.questionId);
+      if(qq) qtext = qq.text;
+    }
+    rows.append = undefined
+    rows.push({
+      quiz: qz ? qz.title : "(deleted quiz)",
+      question: qtext,
+      misses: s.misses,
+      attempts: s.attempts,
+      miss_rate: s.attempts ? (s.misses/s.attempts) : 0
+    });
+  });
+  rows.sort((a,b)=> (b.misses - a.misses) || (b.miss_rate - a.miss_rate));
+  return rows;
+}
+function exportMostMissedByYear(year){
+  const rows = buildMostMissedRowsForYear(year);
+  const header = ["Quiz","Question","Misses","Attempts","Miss Rate"];
+  const lines = [header.join(",")];
+  const csvCell = (v)=>{
+    let s = (typeof v === "number" && !Number.isInteger(v)) ? (v.toLocaleString(undefined,{style:"percent",minimumFractionDigits:0,maximumFractionDigits:0})) : String(v);
+    if(s.includes(",") || s.includes('"')) s = `"${s.replaceAll('"','""')}"`;
+    return s;
+  };
+  rows.forEach(r=>{
+    lines.push([csvCell(r.quiz), csvCell(r.question), csvCell(r.misses), csvCell(r.attempts), csvCell(r.miss_rate)].join(","));
+  });
+  const blob=new Blob([lines.join("\\n")],{type:"text/csv"});
+  const a=document.createElement("a"); a.href=URL.createObjectURL(blob); a.download=`most_missed_${year}.csv`; a.click();
+}
+function renderMostMissedControls(){
+  const reportsSection = document.querySelector('section[data-page="reports"]');
+  if(!reportsSection) return;
+  if(reportsSection.querySelector("#mmControls")) return; // already added
+  const card = document.createElement("div"); card.className="card"; card.id="mmControls";
+  // Years from qstats or attempts (fallback)
+  const yearsSet = new Set((db.qstats||[]).map(s=>s.year));
+  if(yearsSet.size===0){
+    (db.attempts||[]).forEach(a=>{ const y = new Date(a.takenOn).getFullYear(); yearsSet.add(y); });
+  }
+  const years = Array.from(yearsSet).sort((a,b)=>b-a);
+  const currentYear = (new Date()).getFullYear();
+  if(years.length===0) years.push(currentYear);
+  card.innerHTML = `<h3>Most-Missed Questions (by Year)</h3>
+    <div class="row">
+      <div>
+        <label>Year</label>
+        <select id="mmYear">${years.map(y=>`<option value="${y}" ${y===currentYear?"selected":""}>${y}</option>`).join("")}</select>
+      </div>
+      <div style="align-self:end;">
+        <button class="btn" id="btnExportMissed">Export CSV</button>
+      </div>
+    </div>
+    <div class="muted">Exports questions with at least one miss in the selected year, sorted by total misses.</div>`;
+  reportsSection.appendChild(card);
+  const btn = card.querySelector("#btnExportMissed");
+  btn.onclick = ()=>{
+    const year = parseInt(card.querySelector("#mmYear").value,10);
+    exportMostMissedByYear(year);
+  };
+}
+
   const c=document.getElementById(id); if(!c) return; const ctx=c.getContext("2d");
   ctx.clearRect(0,0,c.width,c.height);
   const labels=["Completed","Assigned"];
