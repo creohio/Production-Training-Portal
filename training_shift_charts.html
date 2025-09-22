@@ -1,0 +1,181 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>Training by Shift — Charts</title>
+<style>
+  :root{
+    --bg:#f8fafc; --ink:#0f172a; --muted:#64748b; --accent:#2563eb;
+    --card:#ffffff; --line:#e5e7eb;
+  }
+  html,body{margin:0;background:var(--bg);color:var(--ink);font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif}
+  header{background:#eef2ff;padding:12px 16px;border-bottom:1px solid #dbeafe}
+  header h1{margin:0;font-size:18px}
+  .wrap{max-width:1100px;margin:0 auto;padding:16px}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:14px;margin:0 0 14px 0}
+  h2{margin:0 0 8px 0;font-size:18px}
+  h3{margin:0 0 8px 0;font-size:16px}
+  .row{display:flex;gap:10px;flex-wrap:wrap;align-items:center}
+  .right{margin-left:auto;text-align:right}
+  .muted{color:var(--muted);font-size:12px}
+  canvas{max-width:100%}
+  .grid{display:grid;gap:16px;grid-template-columns:repeat(1,minmax(0,1fr))}
+  @media(min-width:900px){.grid{grid-template-columns:repeat(3,minmax(0,1fr))}}
+  .btn{appearance:none;border:1px solid #cbd5e1;background:#fff;padding:8px 12px;border-radius:10px;cursor:pointer}
+</style>
+</head>
+<body>
+<header><h1>Training by Shift — Charts</h1></header>
+<div class="wrap">
+
+  <section class="card">
+    <div class="row">
+      <h2>Resources People Are Trained In (by Shift)</h2>
+      <div class="right">
+        <button class="btn" id="btnExport">Export CSV</button>
+      </div>
+    </div>
+    <div id="dbKeyNote" class="muted" style="margin-top:6px;"></div>
+  </section>
+
+  <section class="grid">
+    <div class="card">
+      <h3>1st Shift</h3>
+      <canvas id="cShift1" width="360" height="220" aria-label="1st shift chart"></canvas>
+    </div>
+    <div class="card">
+      <h3>2nd Shift</h3>
+      <canvas id="cShift2" width="360" height="220" aria-label="2nd shift chart"></canvas>
+    </div>
+    <div class="card">
+      <h3>3rd Shift</h3>
+      <canvas id="cShift3" width="360" height="220" aria-label="3rd shift chart"></canvas>
+    </div>
+  </section>
+
+  <section class="card">
+    <div class="muted">Each bar = number of active employees on that shift who have a training record for that machine.</div>
+  </section>
+
+</div>
+
+<script>
+/* ======================= Detect existing portal DB key ======================= */
+function detectPortalKey() {
+  const keys = Object.keys(localStorage).filter(k => k.startsWith('ptp_v3:'));
+  if (keys.length === 0) return null;
+  // Heuristic: choose the largest DB value
+  let bestKey = keys[0], bestLen = (localStorage.getItem(keys[0])||'').length;
+  for (const k of keys) {
+    const len = (localStorage.getItem(k)||'').length;
+    if (len > bestLen) { bestLen = len; bestKey = k; }
+  }
+  return bestKey;
+}
+
+const LS_KEY = detectPortalKey();
+const DB = (() => {
+  try {
+    return LS_KEY ? JSON.parse(localStorage.getItem(LS_KEY)) : {employees:[], machines:[], training:[]};
+  } catch {
+    return {employees:[], machines:[], training:[]};
+  }
+})();
+
+document.getElementById('dbKeyNote').textContent = LS_KEY
+  ? `Using data from localStorage key: ${LS_KEY}`
+  : 'No portal data found in this browser (expected key prefix: ptp_v3:).';
+
+function byShiftMachineCounts(shift) {
+  const machines = (DB.machines || []).slice();
+  const emps = (DB.employees || []).filter(e => e && e.active !== false && (e.shift || '1st') === shift);
+  const counts = machines.map(m => {
+    let n = 0;
+    for (const e of emps) {
+      if ((DB.training || []).some(t => t.employeeId === e.id && t.machineId === m.id)) n++;
+    }
+    return n;
+  });
+  return { labels: machines.map(m => m.name), values: counts };
+}
+
+function drawBarChart(canvasId, labels, values) {
+  const c = document.getElementById(canvasId); if (!c) return;
+  const ctx = c.getContext('2d');
+  const W = c.width, H = c.height;
+  ctx.clearRect(0,0,W,H);
+  const left=40, right=10, bottom=40, top=20;
+  const innerW = W-left-right, innerH = H-top-bottom;
+  const n = Math.max(1, labels.length);
+  const gap = 8;
+  const barW = Math.max(4, (innerW - gap*(n-1)) / n);
+  const maxV = Math.max(1, ...values);
+
+  // axis
+  ctx.strokeStyle = '#cbd5e1'; ctx.lineWidth = 1;
+  ctx.beginPath(); ctx.moveTo(left, H-bottom); ctx.lineTo(W-right, H-bottom); ctx.stroke();
+
+  ctx.font = '12px system-ui';
+
+  // bars
+  for (let i=0;i<labels.length;i++) {
+    const v = values[i] || 0;
+    const bh = (v/maxV) * innerH;
+    const x = left + i*(barW+gap);
+    const y = H-bottom - bh;
+    ctx.fillStyle = '#2563eb';
+    ctx.fillRect(x, y, barW, bh);
+    ctx.fillStyle = '#0f172a';
+    ctx.textAlign = 'center';
+    ctx.fillText(String(v), x+barW/2, y-4);
+
+    ctx.save();
+    ctx.translate(x+barW/2, H-bottom+12);
+    if (labels.length > 8) { ctx.rotate(-Math.PI/3); ctx.textAlign='right'; }
+    else { ctx.textAlign='center'; }
+    ctx.fillText(labels[i], 0, 0);
+    ctx.restore();
+  }
+
+  // y ticks
+  const ticks = Math.min(5, maxV);
+  ctx.fillStyle = '#64748b'; ctx.textAlign = 'right';
+  for (let t=0;t<=ticks;t++) {
+    const val = Math.round((t/ticks)*maxV);
+    const yy = H-bottom - (val/maxV)*innerH;
+    ctx.fillText(String(val), left-6, yy+4);
+    ctx.strokeStyle = '#e5e7eb'; ctx.beginPath(); ctx.moveTo(left,yy); ctx.lineTo(W-right,yy); ctx.stroke();
+  }
+}
+
+function drawAllShiftCharts() {
+  const s1 = byShiftMachineCounts('1st');
+  const s2 = byShiftMachineCounts('2nd');
+  const s3 = byShiftMachineCounts('3rd');
+  drawBarChart('cShift1', s1.labels, s1.values);
+  drawBarChart('cShift2', s2.labels, s2.values);
+  drawBarChart('cShift3', s3.labels, s3.values);
+}
+
+function exportAllShiftsCSV() {
+  const machines = (DB.machines || []).map(m => m.name);
+  const s1 = byShiftMachineCounts('1st');
+  const s2 = byShiftMachineCounts('2nd');
+  const s3 = byShiftMachineCounts('3rd');
+  const head = ['Machine','1st Shift','2nd Shift','3rd Shift'];
+  const rows = [head.join(',')];
+  machines.forEach((name,i)=>{
+    rows.push([name, s1.values[i]||0, s2.values[i]||0, s3.values[i]||0].join(','));
+  });
+  const blob = new Blob([rows.join('\n')], {type:'text/csv'});
+  const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = 'training_by_shift.csv'; a.click();
+}
+
+document.getElementById('btnExport').onclick = exportAllShiftsCSV;
+
+// draw now
+drawAllShiftCharts();
+</script>
+</body>
+</html>
