@@ -469,6 +469,21 @@ PAGES.forEach(([id,label,isAdmin],i)=>{
   b.dataset.page=id; if(isAdmin) b.dataset.admin="1";
   tabsEl.appendChild(b);
 });
+
+/* ---- NEW: Logout button in the tabs bar ---- */
+const tabLogout = document.createElement('button');
+tabLogout.className = 'tab';
+tabLogout.id = 'tabLogout';
+tabLogout.textContent = 'Logout';
+tabLogout.style.display = 'none';
+tabLogout.style.marginLeft = 'auto'; // push to right edge
+tabLogout.onclick = () => {
+  // reuse existing logout behavior
+  document.getElementById('btnLogout').click();
+};
+tabsEl.appendChild(tabLogout);
+/* ------------------------------------------- */
+
 function switchPage(id,btn){
   document.querySelectorAll("[data-page]").forEach(s=>s.hidden = s.getAttribute("data-page")!==id);
   document.querySelectorAll(".tab").forEach(t=>t.classList.remove("active"));
@@ -772,6 +787,11 @@ function render(){
   const me = getMe();
   document.getElementById("loginStatus").textContent = me? `Logged in as ${me.name} (${me.isAdmin?"Admin":"Employee"})` : "Not logged in";
 
+  /* ---- NEW: show/hide Logout tab ---- */
+  const lt = document.getElementById('tabLogout');
+  if (lt) lt.style.display = me ? 'inline-block' : 'none';
+  /* ----------------------------------- */
+
   // Employees
   const tb=document.querySelector("#empTable tbody");
   if(tb){
@@ -832,7 +852,7 @@ function render(){
       const e=db.employees.find(x=>x.id===a.employeeId), q=db.quizzes.find(x=>x.id===a.quizId);
       const tr=document.createElement("tr");
       const due = a.dueDate? new Date(a.dueDate) : null;
-      tr.innerHTML = `<td>${e?e.name:"(deleted)"}</td><td>${q?q.title:"(deleted)"}</td><td>${a.required?"Yes":"No"}</td>
+      tr.innerHTML = `<td>${e?e.name:"(deleted)"} </td><td>${q?q.title:"(deleted)"} </td><td>${a.required?"Yes":"No"}</td>
         <td>${new Date(a.assignedOn).toLocaleDateString()}</td>
         <td>${due? due.toLocaleDateString():"—"}</td>
         <td><button class="btn bad" onclick="deleteAssignment(${a.id})">Remove</button></td>`;
